@@ -1,5 +1,4 @@
 streamlit
 yfinance
-requests
-beautifulsoup4
-pandas
+google-generativeai
+gtts
