@@ -19,7 +19,8 @@ except:
     st.error("鍵（Secrets）が設定されていません。")
     st.stop()
 
-MODEL_NAME = "gemini-2.5-flash"
+# ★ここでモデルを1.5に固定（解説が出ない問題の修正）
+MODEL_NAME = "gemini-1.5-flash"
 HISTORY_FILE = "tracking_history.csv"
 
 st.set_page_config(page_title="トレーダーズ・ステーション Pro", layout="wide")
@@ -150,14 +151,14 @@ def check_track_record(row):
         return None
 
 def convert_df_to_csv(df):
-    return df.to_csv(index=False).encode('utf-8-sig') # 文字化け防止
+    return df.to_csv(index=False).encode('utf-8-sig')
 
 # ==========================================
 # 📱 画面表示
 # ==========================================
 clean_old_history()
 
-st.subheader("📊 トレーダーズ・ステーション Pro (CSV Export 📥)")
+st.subheader("📊 トレーダーズ・ステーション Pro (Click to Analyze 🖱️)")
 
 with st.sidebar:
     st.header("🔍 爆速スキャナー")
@@ -177,7 +178,7 @@ with tab1:
     if area == "🇯🇵 日本":
         cat = st.radio("カテゴリー", ["📝 マイ登録銘柄 (編集可)", "💰 値がさ", "👛 手頃", "📉 低位・ボロ株"], horizontal=True)
         if cat == "📝 マイ登録銘柄 (編集可)":
-            st.info("👇 コード入力 → 名前取得 → スキャン → 良ければ保存！")
+            st.info("👇 コード入力 → 名前取得 → スキャン → クリックで詳細分析！")
             edited_df = st.data_editor(st.session_state.my_stock_list, num_rows="dynamic", column_order=["コード", "銘柄名"], key="editor", use_container_width=True)
             st.session_state.my_stock_list = edited_df
             c1, c2, c3 = st.columns(3)
@@ -227,30 +228,88 @@ with tab1:
                 st.warning("条件に合う銘柄なし")
         st.session_state.run_scan = False
 
+    # ★★★ ここからが「クリックで分析」の心臓部 ★★★
+    selected_ticker = None
     if st.session_state.scan_results is not None and not st.session_state.scan_results.empty:
-        event = st.dataframe(st.session_state.scan_results, selection_mode="multi-row", on_select="rerun", hide_index=True, use_container_width=True, key="scan_table")
+        st.markdown("### 👇 気になる銘柄の行をクリックしてください（AIが喋ります）")
         
-        # ★★★ CSVダウンロードボタン (スキャン結果) ★★★
+        # 選択モードを single-row に設定
+        event = st.dataframe(
+            st.session_state.scan_results, 
+            selection_mode="single-row", 
+            on_select="rerun", 
+            hide_index=True, 
+            use_container_width=True, 
+            key="scan_table"
+        )
+        
+        # CSVダウンロード
         csv = convert_df_to_csv(st.session_state.scan_results)
-        st.download_button("📥 スキャン結果をCSVでダウンロード", data=csv, file_name="scan_results.csv", mime="text/csv")
+        st.download_button("📥 スキャン結果をCSVでDL", data=csv, file_name="scan_results.csv", mime="text/csv")
+        
+        if len(event.selection.rows) > 0:
+            idx = event.selection.rows[0]
+            selected_ticker = st.session_state.scan_results.iloc[idx]["コード"]
 
-        st.markdown("##### 👇 チェックした銘柄を「検証リスト」に保存")
-        if st.button("💾 チェックした銘柄を追跡開始 (1週間)"):
-            if len(event.selection.rows) > 0:
-                selected_indices = event.selection.rows
-                history_df = load_history()
-                new_entries = []
-                today = datetime.date.today()
-                for idx in selected_indices:
-                    item = st.session_state.raw_scan_results[idx]
-                    new_entries.append({"登録日": today, "銘柄名": item['銘柄名'], "コード": item['コード'], "登録時株価": item['現在値']})
-                if new_entries:
-                    new_df = pd.DataFrame(new_entries)
-                    history_df = pd.concat([history_df, new_df], ignore_index=True)
-                    save_history(history_df)
-                    st.success(f"{len(new_entries)}件を検証リストに追加しました！")
-            else:
-                st.warning("表のチェックボックスで銘柄を選んでください。")
+    # 自動分析エリア
+    if selected_ticker:
+        target_ticker = selected_ticker
+        st.divider()
+        st.header(f"🤖 {target_ticker} の徹底分析レポート")
+
+        with st.spinner(f"{target_ticker} をAIが分析中...（音声が出ます 🔊）"):
+            try:
+                stock = yf.Ticker(target_ticker)
+                df = stock.history(period="6mo")
+                if df.empty: 
+                    st.error("データ取得不可")
+                else:
+                    df = calculate_lines(df)
+                    fig = go.Figure()
+                    fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='価格'))
+                    fig.add_trace(go.Scatter(x=df.index, y=df['Trend_Upper'], mode='lines', line=dict(color='red', width=1), name='上値メド'))
+                    fig.add_trace(go.Scatter(x=df.index, y=df['Trend_Lower'], mode='lines', line=dict(color='blue', width=1), name='下値メド'))
+                    fig.update_layout(height=400, xaxis_rangeslider_visible=False)
+                    st.plotly_chart(fig, use_container_width=True)
+
+                    current_price = df['Close'].iloc[-1]
+                    rsi_val = calculate_rsi(df['Close']).iloc[-1]
+                    slope = df['Trend_Slope'].iloc[-1]
+                    
+                    prompt = f"""
+                    投資のプロとして、以下の銘柄を短く激しく解説してください。
+                    銘柄: {target_ticker}
+                    現在値: {current_price:.0f}円
+                    RSI: {rsi_val:.1f}
+                    トレンド: {'上昇中' if slope > 0 else '下落中'}
+                    【内容】
+                    ・チャンスか危険かズバリ一言
+                    ・その理由（テクニカル視点）
+                    ・具体的なアクション（買うなら今か、待つか）
+                    """
+                    
+                    genai.configure(api_key=API_KEY)
+                    model = genai.GenerativeModel(MODEL_NAME)
+                    response = model.generate_content(prompt)
+                    
+                    st.info("🗣️ AIからの助言")
+                    st.markdown(response.text)
+                    play_text_to_speech(response.text)
+                    
+                    if st.button("💾 この銘柄を検証リストに保存（1週間追跡）"):
+                        history_df = load_history()
+                        new_entry = pd.DataFrame([{
+                            "登録日": datetime.date.today(),
+                            "銘柄名": fetch_name(target_ticker),
+                            "コード": target_ticker,
+                            "登録時株価": current_price
+                        }])
+                        history_df = pd.concat([history_df, new_entry], ignore_index=True)
+                        save_history(history_df)
+                        st.success("保存しました！週末に答え合わせしましょう！")
+
+            except Exception as e:
+                st.error(f"エラー: {e}")
 
 # --- タブ2: 検証 ---
 with tab2:
@@ -258,9 +317,8 @@ with tab2:
     history_df = load_history()
     
     if history_df.empty:
-        st.write("データなし。タブ1で登録してください。")
+        st.write("データなし。タブ1でクリックして保存してください。")
     else:
-        # ★★★ CSVダウンロードボタン (検証履歴) ★★★
         csv_hist = convert_df_to_csv(history_df)
         col_h1, col_h2 = st.columns([3, 1])
         with col_h2:
@@ -280,10 +338,8 @@ with tab2:
                         return f'color: {color}; font-weight: bold'
                     st.dataframe(res_df.style.map(highlight_result, subset=['結果', '期間高値']), hide_index=True, use_container_width=True)
                     
-                    # 結果が出た後のデータもDLできるようにする
                     csv_res = convert_df_to_csv(res_df)
                     st.download_button("📥 答え合わせ結果をDL", data=csv_res, file_name="verification_result.csv", mime="text/csv")
-
                 else: st.error("データ取得エラー")
         else:
              st.dataframe(history_df, hide_index=True, use_container_width=True)
