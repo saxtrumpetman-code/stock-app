@@ -344,3 +344,21 @@ with tab2:
                 else: st.error("データ取得エラー")
         else:
              st.dataframe(history_df, hide_index=True, use_container_width=True)
+             # --- ここから下を app.py の一番下にコピペしてください ---
+
+st.divider()
+st.subheader("🔍 使えるモデル一覧チェッカー")
+
+try:
+    st.write("Googleに問い合わせ中...")
+    available_models = []
+    for m in genai.list_models():
+        if 'generateContent' in m.supported_generation_methods:
+            available_models.append(m.name)
+            st.code(m.name) # 画面にモデル名を表示
+    
+    if not available_models:
+        st.error("使えるモデルが見つかりませんでした。APIキーかライブラリのバージョンを確認してください。")
+
+except Exception as e:
+    st.error(f"エラーが発生しました: {e}")
