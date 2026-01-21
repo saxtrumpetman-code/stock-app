@@ -19,8 +19,8 @@ except:
     st.error("鍵（Secrets）が設定されていません。")
     st.stop()
 
-# 3.0 は敏感すぎるので、実績最強の 2.0 に変更！
-MODEL_NAME = "gemini-2.0-flash"
+# 最新の2.0/3.0は制限が厳しいので、安定の1.5に戻します
+MODEL_NAME = "gemini-1.5-flash"
 HISTORY_FILE = "tracking_history.csv"
 
 st.set_page_config(page_title="トレーダーズ・ステーション Pro", layout="wide")
