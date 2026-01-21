@@ -148,4 +148,36 @@ if api_key:
                     st.subheader(f"📊 {ticker} 詳細チャート")
                     fig = go.Figure()
                     fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='ローソク'))
-                    fig.add_trace(go.Scatter(x=df.index, y=df['SMA20'], line=dict(color='orange'),
+                    fig.add_trace(go.Scatter(x=df.index, y=df['SMA20'], line=dict(color='orange'), name='SMA20'))
+                    fig.add_trace(go.Scatter(x=df.index, y=df['SMA50'], line=dict(color='blue'), name='SMA50'))
+                    fig.update_layout(height=600, xaxis_rangeslider_visible=False)
+                    st.plotly_chart(fig, use_container_width=True)
+
+                    # 2. 分析レポート
+                    st.divider()
+                    st.subheader("🤖 Gemini先生の投資分析")
+                    last = df.iloc[-1]
+                    
+                    prompt = f"""
+                    あなたはプロの投資アナリストです。
+                    銘柄: {ticker}
+                    現在値: {last['Close']:.2f}
+                    RSI(14): {last['RSI']:.2f}
+                    
+                    以下の項目について、日本語で的確に分析してください：
+                    1. **トレンド判定**: 現在は上昇・下降・レンジのどれか。
+                    2. **売買シグナル**: 現時点での「買い」「売り」「様子見」の判断。
+                    3. **戦略シナリオ**: 狙い目のエントリー価格や、損切りラインの目安。
+                    """
+                    res = model.generate_content(prompt)
+                    st.markdown(res.text)
+
+            except Exception as e:
+                st.error(f"エラーが発生しました: {e}")
+
+    # 何も操作していない時
+    else:
+        st.info("👈 左側のメニューから、分析モードを選んでください。")
+
+else:
+    st.warning("👈 左上の欄にAPIキーを入力してください")
