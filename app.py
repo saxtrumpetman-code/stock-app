@@ -4,27 +4,11 @@ import plotly.graph_objects as go
 import yfinance as yf
 import time
 
-# --- 設定: ここで賢くモデルを選びます ---
-def configure_model(api_key):
-    genai.configure(api_key=api_key)
-    
-    # 優先順位: 1.5-flash (高速・多回数) -> pro (安定・標準)
-    models_to_try = ["gemini-1.5-flash", "gemini-pro", "gemini-1.5-flash-latest"]
-    
-    # 実際に通信して、使えるモデルを探すテスト
-    for model_name in models_to_try:
-        try:
-            test_model = genai.GenerativeModel(model_name)
-            # 軽い挨拶でテスト
-            test_model.generate_content("test")
-            return model_name # 使えたらその名前を返す
-        except Exception as e:
-            continue # ダメなら次へ
-            
-    return "gemini-pro" # 全部ダメなら一旦proにする
+# --- 設定: エラーが出たこの名前が、実は正解でした ---
+MODEL_NAME = "gemini-flash-latest"
 
 st.set_page_config(page_title="トレードAI分析 Pro", layout="wide")
-st.title("📈 トレードAI分析 Pro (完全自動修復版)")
+st.title("📈 トレードAI分析 Pro (不屈の再試行版)")
 
 # --- サイドバー ---
 with st.sidebar:
@@ -44,19 +28,35 @@ with st.sidebar:
     st.divider()
 
     st.header("3. 自動スクリーニング")
-    st.caption("※制限回避のため、5秒ずつ休憩しながら進みます")
+    st.caption("※制限がかかっても自動で待機して再開します")
     
     btn_low = st.button("💰 日本株：定位株 (低位)")
     btn_large = st.button("🏢 日本株：主力株 (大型)")
     btn_us = st.button("🇺🇸 米国株：人気銘柄")
 
+# --- 関数: 諦めないAI呼び出し ---
+def ask_gemini_with_retry(model, prompt):
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            return model.generate_content(prompt)
+        except Exception as e:
+            # 429エラー (使いすぎ) なら待つ
+            if "429" in str(e) or "Quota" in str(e):
+                wait_time = 20 + (attempt * 10) # 20秒, 30秒, 40秒と伸ばす
+                st.warning(f"⚠️ 通信制限中... {wait_time}秒待機して再試行します ({attempt+1}/{max_retries})")
+                time.sleep(wait_time)
+            else:
+                # それ以外のエラーは報告して終了
+                st.error(f"AIエラー: {e}")
+                return None
+    st.error("❌ 混雑が激しいため中断しました。時間を空けて試してください。")
+    return None
+
 # --- メイン処理 ---
 if api_key:
-    # ここで「使えるモデル」を自動決定！
-    active_model_name = configure_model(api_key)
-    # st.toast(f"現在のAIモデル: {active_model_name}") # (デバッグ用: 画面右下に表示)
-    
-    model = genai.GenerativeModel(active_model_name)
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel(MODEL_NAME)
 
     # ========================================================
     # パターンA：スクリーニング (リスト連続分析)
@@ -109,21 +109,16 @@ if api_key:
                             回答: 結論を一言（買い/売り/様子見）で述べ、理由を1行で。
                             """
                             
-                            try:
-                                res = model.generate_content(prompt)
+                            # ★ここが変わりました：粘り強い呼び出し★
+                            res = ask_gemini_with_retry(model, prompt)
+                            if res:
                                 st.info(res.text)
-                            except Exception as e:
-                                if "429" in str(e):
-                                    st.warning("⚠️ 使いすぎ制限中。スキップします。")
-                                else:
-                                    st.error("AIエラー")
 
                 except Exception as e:
-                    st.error(f"エラー: {e}")
+                    st.error(f"データエラー: {e}")
             
             bar.progress((i + 1) / len(target_list))
-            # ★休憩時間を5秒に延長
-            time.sleep(5) 
+            time.sleep(2) # 基本休憩
             
         status.success("✅ スキャン完了")
 
@@ -174,14 +169,10 @@ if api_key:
                     3. **戦略シナリオ**: エントリー価格、損切り、利確の目安。
                     """
                     
-                    try:
-                        res = model.generate_content(prompt)
+                    # ★粘り強い呼び出し★
+                    res = ask_gemini_with_retry(model, prompt)
+                    if res:
                         st.markdown(res.text)
-                    except Exception as e:
-                         if "429" in str(e):
-                             st.error("⚠️ AIの使いすぎです。数分待ってからやり直してください。")
-                         else:
-                             st.error(f"AIエラー: {e}")
 
             except Exception as e:
                 st.error(f"システムエラー: {e}")
