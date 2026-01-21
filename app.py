@@ -2,6 +2,7 @@ import streamlit as st
 import google.generativeai as genai
 import plotly.graph_objects as go
 import yfinance as yf
+import pandas as pd
 
 # --- 設定 ---
 MODEL_NAME = "gemini-flash-latest"
@@ -21,7 +22,7 @@ with st.sidebar:
 
     # --- ① 個別分析メニュー ---
     st.header("2. 個別銘柄の分析")
-    ticker = st.text_input("コード入力 (例: USDJPY=X, 7203.T)", value="USDJPY=X")
+    ticker = st.text_input("コード入力 (例: 7203.T)", value="7203.T")
     days = st.slider("期間 (日)", 30, 365, 180)
     
     # メインの実行ボタン
@@ -29,7 +30,7 @@ with st.sidebar:
 
     st.divider()
 
-    # --- ② 株式スクリーニングメニュー (ここに追加！) ---
+    # --- ② 株式スクリーニングメニュー ---
     st.header("3. 株式スクリーニング")
     st.caption("ボタンを押すとリストをスキャンします")
     
@@ -53,49 +54,72 @@ if api_key:
             target_list = ["7203.T", "8306.T", "9984.T", "6758.T", "8035.T"] # トヨタ, 三菱UFJ...
             st.subheader("🏢 主力株（大型株）のAI判定")
 
-        # 一括分析ループ
+        # ★ここを修正：一番頑丈なデータ取得方法に変更★
         for t in target_list:
             with st.container(border=True):
                 try:
-                    df = yf.download(t, period="100d", interval="1d", progress=False)
-                    if not df.empty:
+                    # yf.Ticker().history() は単体取得に特化しておりエラーが起きにくい
+                    stock = yf.Ticker(t)
+                    df = stock.history(period="100d")
+                    
+                    if df.empty:
+                        st.error(f"❌ {t}: データが取れませんでした")
+                    else:
                         # 簡易計算
                         last_price = df['Close'].iloc[-1]
                         delta = df['Close'].diff()
-                        rs = (delta.where(delta > 0, 0)).rolling(14).mean() / (-delta.where(delta < 0, 0)).rolling(14).mean()
-                        rsi = 100 - (100 / (1 + rs)).iloc[-1]
+                        gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+                        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+                        rs = gain / loss
+                        rsi_val = 100 - (100 / (1 + rs))
+                        rsi = rsi_val.iloc[-1] # 最新のRSI
 
                         col_chart, col_text = st.columns([2, 1])
                         
                         # ミニチャート
                         with col_chart:
-                            st.write(f"**{t}**")
+                            st.markdown(f"**{t}**")
                             st.line_chart(df['Close'], height=150)
                         
                         # AI判定
                         with col_text:
                             st.metric("株価", f"{last_price:.0f} 円", f"RSI: {rsi:.1f}")
+                            
+                            prompt = f"""
+                            株銘柄: {t}
+                            現在値: {last_price:.0f}円
+                            RSI: {rsi:.1f}
+                            
+                            質問: 今、買い時ですか？
+                            回答: 一言で「買い」「売り」「様子見」と判定し、理由を1行で述べてください。
+                            """
                             with st.spinner("AI判定中..."):
-                                res = model.generate_content(f"株銘柄 {t} (RSI:{rsi:.1f})。今、買い時ですか？一言で「買い」「売り」「様子見」と判定し、理由を1行で。")
+                                res = model.generate_content(prompt)
                                 st.info(res.text)
-                except:
-                    st.error(f"{t} の取得エラー")
+                except Exception as e:
+                    st.error(f"⚠️ {t}: エラー ({e})")
 
     # ---------------------------------------------------
     # パターンB：個別分析 (Pro版の画面) ※デフォルト
     # ---------------------------------------------------
-    elif btn_single: # ボタンを押した時
+    elif btn_single: 
         with st.spinner(f"{ticker} を詳細分析中..."):
             try:
-                df = yf.download(ticker, period=f"{days}d", interval="1d", progress=False)
+                # 個別も頑丈な方法に変更
+                stock = yf.Ticker(ticker)
+                df = stock.history(period=f"{days}d")
+                
                 if df.empty:
                     st.error("データが見つかりません。コードを確認してください。")
                 else:
                     # テクニカル計算
                     df['SMA20'] = df['Close'].rolling(20).mean()
                     df['SMA50'] = df['Close'].rolling(50).mean()
+                    
                     delta = df['Close'].diff()
-                    rs = (delta.where(delta > 0, 0)).rolling(14).mean() / (-delta.where(delta < 0, 0)).rolling(14).mean()
+                    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+                    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+                    rs = gain / loss
                     df['RSI'] = 100 - (100 / (1 + rs))
 
                     # 1. 大きなチャート (Pro仕様)
@@ -110,11 +134,13 @@ if api_key:
                     st.subheader("🤖 Gemini先生の分析レポート")
                     last = df.iloc[-1]
                     prompt = f"""
-                    あなたはプロトレーダーです。
-                    銘柄: {ticker}, 価格: {last['Close']:.2f}, RSI: {last['RSI']:.2f}
+                    あなたはプロの株式アナリストです。
+                    銘柄: {ticker}
+                    現在値: {last['Close']:.2f}
+                    RSI(14): {last['RSI']:.2f}
                     
                     1. トレンド分析
-                    2. 売買シグナル (FXならショートも考慮)
+                    2. 売買シグナル (今買うべきか？)
                     3. 戦略 (エントリー・損切り)
                     を日本語で簡潔に。
                     """
@@ -125,7 +151,7 @@ if api_key:
     
     # 何も押してない時
     else:
-        st.info("👈 左のサイドバーから「分析ボタン」か「スクリーニングボタン」を押してください。")
+        st.info("👈 左のメニューから「チャート分析」か「スクリーニング」を選んでください。")
 
 else:
     st.warning("👈 左上の欄にAPIキーを入れてください")
