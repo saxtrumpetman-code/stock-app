@@ -2,117 +2,102 @@ import streamlit as st
 import google.generativeai as genai
 import plotly.graph_objects as go
 import yfinance as yf
+import pandas as pd
 
 # --- 設定 ---
 MODEL_NAME = "gemini-flash-latest"
 
-st.set_page_config(page_title="かんたん株AI", layout="wide")
-st.title("📈 かんたん株AI")
+st.set_page_config(page_title="トレードAI分析 Pro", layout="wide")
+st.title("📈 トレードAI分析 Pro (FX対応)")
 
-# --- サイドバー ---
+# --- サイドバー設定 ---
 with st.sidebar:
-    st.header("1. 鍵を入れる")
+    st.header("設定")
+    # APIキー入力
     try:
         api_key = st.secrets["GEMINI_API_KEY"]
     except:
-        api_key = st.text_input("Gemini APIキー", type="password")
-
-    st.divider()
-
-    st.header("2. 何を見る？")
+        api_key = st.text_input("Gemini APIキーを入れてください", type="password")
     
-    mode = "manual"
-    target_list = []
-
-    # ボタンエリア
-    if st.button("💰 お宝！低位株 (安い株)", type="primary"):
-        mode = "scan"
-        target_list = ["4755.T", "5020.T", "7201.T", "4689.T", "8410.T"]
-        st.success("安い株を探しています！")
-
-    if st.button("🏆 王道！大型株 (有名)", type="primary"):
-        mode = "scan"
-        target_list = ["7203.T", "8306.T", "6758.T", "7974.T"]
-        st.success("有名な株を見ています！")
-
-    st.write("--- または ---")
-
-    manual_code = st.text_input("コードを入れる (例: 7203.T)", value="7203.T")
-    st.caption("※日本株は .T をつけてね")
+    # 銘柄入力
+    ticker = st.text_input("銘柄コード (例: USDJPY=X, 7203.T)", value="USDJPY=X")
+    st.caption("※ドル円: USDJPY=X, ユーロドル: EURUSD=X, ビットコイン: BTC-USD")
     
-    if st.button("この株を調べる"):
-        mode = "manual"
+    days = st.slider("期間（日）", 30, 365, 180)
+    
+    # 分析ボタン
+    run_btn = st.button("AI分析を開始", type="primary")
 
 # --- メイン処理 ---
-if api_key:
+if run_btn and api_key:
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel(MODEL_NAME)
-
-    # リストの決定
-    if mode == "scan":
-        tickers = target_list
-    else:
-        tickers = [manual_code]
-
-    # --- 順番に分析 ---
-    for ticker in tickers:
-        # データの取得
-        df = yf.download(ticker, period="180d", interval="1d", progress=False)
-        
-        if df.empty:
-            st.error(f"❌ 「{ticker}」が見つからないよ。コード合ってる？")
-        else:
-            # RSI計算
-            delta = df['Close'].diff()
-            gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-            rs = gain / loss
-            rsi = 100 - (100 / (1 + rs))
+    
+    with st.spinner(f"{ticker} のデータを取得中..."):
+        try:
+            # データ取得
+            df = yf.download(ticker, period=f"{days}d", interval="1d")
             
-            last_rsi = rsi.iloc[-1]
-            last_price = df['Close'].iloc[-1]
-
-            # 表示エリア
-            with st.container(border=True):
-                st.subheader(f"{ticker}")
+            if df.empty:
+                st.error("データが見つかりませんでした。コードを確認してください。")
+            else:
+                # テクニカル計算
+                # 移動平均線
+                df['SMA20'] = df['Close'].rolling(window=20).mean()
+                df['SMA50'] = df['Close'].rolling(window=50).mean()
                 
-                col_chart, col_ai = st.columns([2, 1])
+                # RSI
+                delta = df['Close'].diff()
+                gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+                loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+                rs = gain / loss
+                df['RSI'] = 100 - (100 / (1 + rs))
 
-                with col_chart:
-                    # チャート作成
-                    fig = go.Figure()
-                    fig.add_trace(go.Candlestick(
-                        x=df.index, 
-                        open=df['Open'], 
-                        high=df['High'], 
-                        low=df['Low'], 
-                        close=df['Close']
-                    ))
-                    fig.update_layout(height=300, margin=dict(l=0, r=0, t=0, b=0))
-                    st.plotly_chart(fig, use_container_width=True)
+                # チャート描画
+                fig = go.Figure()
+                
+                # ローソク足
+                fig.add_trace(go.Candlestick(
+                    x=df.index,
+                    open=df['Open'], high=df['High'],
+                    low=df['Low'], close=df['Close'],
+                    name='ローソク足'
+                ))
+                
+                # SMA
+                fig.add_trace(go.Scatter(x=df.index, y=df['SMA20'], line=dict(color='orange', width=1), name='SMA20'))
+                fig.add_trace(go.Scatter(x=df.index, y=df['SMA50'], line=dict(color='blue', width=1), name='SMA50'))
+                
+                fig.update_layout(title=f"{ticker} チャート", height=600)
+                st.plotly_chart(fig, use_container_width=True)
 
-                with col_ai:
-                    st.metric("今の値段", f"{last_price:.0f} 円", f"RSI: {last_rsi:.1f}")
+                # AI分析開始
+                st.subheader("🤖 Geminiの分析レポート")
+                model = genai.GenerativeModel(MODEL_NAME)
+                
+                # AIに渡すデータ
+                last_price = df['Close'].iloc[-1]
+                last_rsi = df['RSI'].iloc[-1]
+                data_summary = f"銘柄: {ticker}, 現在値: {last_price:.2f}, RSI(14): {last_rsi:.2f}"
+                
+                # プロンプト（FX対応のまま）
+                PROMPT = """
+                あなたはプロの凄腕トレーダーです。
+                提供されたデータを分析し、以下のフォーマットで投資判断を行ってください。
 
-                    # AI分析
-                    st.write("🤖 **AIの判定**")
-                    prompt = f"""
-                    あなたは株の先生です。小学生にもわかるように答えてください。
-                    銘柄: {ticker} (現在値:{last_price:.0f}円, RSI:{last_rsi:.1f})
-                    
-                    質問: この株は今、買ったほうがいい？売ったほうがいい？
-                    
-                    ルール:
-                    1. 「買い」「売り」「様子見」のどれかハッキリ言う。
-                    2. 理由は1行で簡単・短く言う。
-                    """
-                    
-                    with st.spinner("考え中..."):
-                        try:
-                            res = model.generate_content(prompt)
-                            st.info(res.text)
-                        except:
-                            st.error("AIが疲れちゃったみたい。もう一回試してね。")
+                1. **トレンド**: [上昇 / 下降 / レンジ] から選択
+                2. **売買判断**:
+                   - 【買い (LONG)】
+                   - 【売り (SHORT)】
+                   - 【様子見 (WAIT)】
+                3. **戦略・根拠**:
+                   - エントリーの根拠
+                   - 損切り(Stop Loss)の目安
+                """
+                
+                full_prompt = f"{PROMPT}\n\n【最新データ】\n{data_summary}"
+                
+                response = model.generate_content(full_prompt)
+                st.markdown(response.text)
 
-else:
-    st.warning("👈 左にAPIキーを入れてね")
+        except Exception as e:
+            st.error(f"エラーが発生しました: {e}")
