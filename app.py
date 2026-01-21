@@ -19,9 +19,8 @@ except:
     st.error("鍵（Secrets）が設定されていません。")
     st.stop()
 
-# ★ここでモデルを1.5に固定（解説が出ない問題の修正）
-# 20行目あたり
-MODEL_NAME = "gemini-1.5-flash"
+# ここを書き換え
+MODEL_NAME = "gemini-3-flash-preview"
 HISTORY_FILE = "tracking_history.csv"
 
 st.set_page_config(page_title="トレーダーズ・ステーション Pro", layout="wide")
