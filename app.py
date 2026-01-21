@@ -2,14 +2,13 @@ import streamlit as st
 import google.generativeai as genai
 import plotly.graph_objects as go
 import yfinance as yf
-import time
+import time  # 休憩用
 
-# --- 【重要】ここを修正しました ---
-# 1日20回制限のモデルをやめ、1500回使える安定版に変更
-MODEL_NAME = "gemini-1.5-flash"
+# --- 【修正】元の名前に戻しました（これが正解） ---
+MODEL_NAME = "gemini-flash-latest"
 
 st.set_page_config(page_title="トレードAI分析 Pro", layout="wide")
-st.title("📈 トレードAI分析 Pro (安定版)")
+st.title("📈 トレードAI分析 Pro (完全対策版)")
 
 # --- サイドバー ---
 with st.sidebar:
@@ -29,6 +28,7 @@ with st.sidebar:
     st.divider()
 
     st.header("3. 自動スクリーニング")
+    st.caption("※エラー防止のため、ゆっくり分析します")
     btn_low = st.button("💰 日本株：定位株 (低位)")
     btn_large = st.button("🏢 日本株：主力株 (大型)")
     btn_us = st.button("🇺🇸 米国株：人気銘柄")
@@ -94,17 +94,20 @@ if api_key:
                                 res = model.generate_content(prompt)
                                 st.info(res.text)
                             except Exception as e:
-                                # エラーが出てもアプリを落とさない
+                                # 万が一エラーが出ても止まらないようにする
                                 if "429" in str(e):
-                                    st.warning("⚠️ 制限超過。スキップします。")
+                                    st.warning("⚠️ 混雑中。スキップします。")
                                 else:
                                     st.error("AI応答なし")
 
                 except Exception as e:
                     st.error(f"エラー: {e}")
             
+            # プログレスバー更新
             bar.progress((i + 1) / len(target_list))
-            time.sleep(4) # 念のため休憩
+            
+            # ★ここが最重要：429エラーを防ぐための休憩時間★
+            time.sleep(4) 
             
         status.success("✅ 完了")
 
@@ -147,7 +150,10 @@ if api_key:
                         res = model.generate_content(prompt)
                         st.markdown(res.text)
                     except Exception as e:
-                         st.error(f"AIエラー: {e}")
+                         if "429" in str(e):
+                             st.error("⚠️ AIの使いすぎです。数分待ってからやり直してください。")
+                         else:
+                             st.error(f"AIエラー: {e}")
 
             except Exception as e:
                 st.error(f"システムエラー: {e}")
