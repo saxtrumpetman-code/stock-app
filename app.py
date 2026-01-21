@@ -2,15 +2,15 @@ import streamlit as st
 import google.generativeai as genai
 import plotly.graph_objects as go
 import yfinance as yf
-import time  # エラー回避のための休憩用
+import time  # 連続アクセス制限の回避用
 
 # --- 設定 ---
 MODEL_NAME = "gemini-flash-latest"
 
-st.set_page_config(page_title="トレードAI実況", layout="wide")
-st.title("🎙️ トレードAI実況解説 (スクリーニング付)")
+st.set_page_config(page_title="トレードAI分析 Pro", layout="wide")
+st.title("📈 トレードAI分析 Pro (スクリーニング機能搭載)")
 
-# --- サイドバー (機能の司令塔) ---
+# --- サイドバー (設定・操作) ---
 with st.sidebar:
     st.header("1. 設定")
     try:
@@ -20,19 +20,17 @@ with st.sidebar:
 
     st.divider()
 
-    # --- ① 個別銘柄の分析 ---
-    st.header("2. 個別銘柄の実況")
-    ticker = st.text_input("コード入力 (例: 7203.T, NVDA)", value="7203.T")
+    # --- 個別分析 ---
+    st.header("2. 個別銘柄の分析")
+    ticker = st.text_input("銘柄コード (例: 7203.T, NVDA, USDJPY=X)", value="7203.T")
     days = st.slider("期間 (日)", 30, 365, 180)
-    
-    # 個別分析ボタン
-    btn_single = st.button("🚀 チャート実況スタート", type="primary")
+    btn_single = st.button("🚀 チャート分析を実行", type="primary")
 
     st.divider()
 
-    # --- ② 自動スクリーニング (お宝探し) ---
+    # --- スクリーニング ---
     st.header("3. 自動スクリーニング")
-    st.caption("ボタンを押すと、AIが順番に実況します")
+    st.caption("注目の銘柄リストを連続でAI診断します")
     
     btn_low = st.button("💰 日本株：定位株 (低位)")
     btn_large = st.button("🏢 日本株：主力株 (大型)")
@@ -44,42 +42,42 @@ if api_key:
     model = genai.GenerativeModel(MODEL_NAME)
 
     # ========================================================
-    # パターンA：スクリーニング実況 (リストを連続分析)
+    # パターンA：スクリーニング実行 (リスト連続分析)
     # ========================================================
     if btn_low or btn_large or btn_us:
-        # リストの準備
+        # リストの定義
         if btn_low:
-            target_list = ["4755.T", "5020.T", "7201.T", "4689.T", "8410.T"]
-            st.subheader("💰 定位株（低位株）の連続実況")
+            target_list = ["4755.T", "5020.T", "7201.T", "4689.T", "8410.T"] # 楽天, ENEOS, 日産...
+            st.subheader("💰 日本株（定位・低位株）を一括診断")
         elif btn_large:
-            target_list = ["7203.T", "8306.T", "9984.T", "6758.T", "8035.T"]
-            st.subheader("🏢 主力株（大型株）の連続実況")
+            target_list = ["7203.T", "8306.T", "9984.T", "6758.T", "8035.T"] # トヨタ, 三菱UFJ...
+            st.subheader("🏢 日本株（主力・大型株）を一括診断")
         else:
-            target_list = ["NVDA", "TSLA", "AAPL", "MSFT", "AMZN"]
-            st.subheader("🇺🇸 米国人気株の連続実況")
+            target_list = ["NVDA", "TSLA", "AAPL", "MSFT", "AMZN"] # 米国株
+            st.subheader("🇺🇸 米国株（人気銘柄）を一括診断")
 
-        # 進行バー
+        # 進行状況バー
         bar = st.progress(0)
         status = st.empty()
 
-        # ループ処理
+        # 連続スキャン処理
         for i, t in enumerate(target_list):
-            status.text(f"🎙️ {t} を解説中... ({i+1}/{len(target_list)})")
+            status.text(f"⏳ 分析中... {t} ({i+1}/{len(target_list)})")
             
             with st.container(border=True):
                 col_chart, col_ai = st.columns([2, 1])
                 
                 try:
-                    # データ取得
+                    # データ取得 (エラーに強い history 方式)
                     stock = yf.Ticker(t)
                     df = stock.history(period="100d")
                     
                     if df.empty:
-                        st.error(f"❌ {t}: データなし")
+                        st.error(f"❌ {t}: データ取得不可")
                     else:
-                        # 準備
+                        # データ整理
                         last_price = df['Close'].iloc[-1]
-                        currency = "$" if "T" not in t else "円"
+                        currency = "$" if "T" not in t and "=X" not in t else "円"
                         
                         # RSI計算
                         delta = df['Close'].diff()
@@ -91,25 +89,26 @@ if api_key:
                             st.markdown(f"#### {t}")
                             st.line_chart(df['Close'], height=150)
 
-                        # 右：AI判定（読み上げ式）
+                        # 右：AI判定
                         with col_ai:
-                            st.metric("現在値", f"{last_price:.2f} {currency}", f"RSI: {rsi:.1f}")
+                            st.metric("株価", f"{last_price:.2f} {currency}", f"RSI: {rsi:.1f}")
                             
-                            # ★ここが変更点：読み上げ用のプロンプト★
+                            # プロンプト (標準的なプロに戻しました)
                             prompt = f"""
-                            あなたは経済ニュースのキャスターです。
-                            銘柄: {t} (価格:{last_price:.2f}, RSI:{rsi:.1f})
+                            銘柄: {t}
+                            現在値: {last_price:.2f}
+                            RSI: {rsi:.1f}
                             
-                            この株の今の状況を、視聴者に語りかけるような「読み上げ口調（話し言葉）」で短く解説してください。
-                            「〜です。〜ます。」調を使い、結論（買いか売りか）を明確に伝えてください。
+                            質問: 現在のテクニカル的な「買い」「売り」の判断は？
+                            回答: 結論を一言で述べ、その理由を1行で簡潔に解説してください。
                             """
                             
                             try:
                                 res = model.generate_content(prompt)
-                                st.info(res.text) # AIの実況コメント
+                                st.info(res.text)
                             except Exception as e:
                                 if "429" in str(e):
-                                    st.warning("⚠️ 少し休憩中...")
+                                    st.warning("⚠️ 混雑のためスキップしました")
                                 else:
                                     st.error("AIエラー")
                 
@@ -118,15 +117,18 @@ if api_key:
             
             # プログレスバー更新
             bar.progress((i + 1) / len(target_list))
-            time.sleep(3) # エラー防止の休憩
             
-        status.success("✅ 全銘柄の実況が終了しました！")
+            # ★重要★ エラー防止のため3秒待機
+            if i < len(target_list) - 1:
+                time.sleep(3)
+            
+        status.success("✅ スキャン完了")
 
     # ========================================================
-    # パターンB：個別詳細実況 (Pro画面)
+    # パターンB：個別詳細分析 (Pro画面)
     # ========================================================
     elif btn_single:
-        with st.spinner(f"🎙️ {ticker} の詳細データを解析中..."):
+        with st.spinner(f"🔍 {ticker} を詳細分析中..."):
             try:
                 stock = yf.Ticker(ticker)
                 df = stock.history(period=f"{days}d")
@@ -137,53 +139,13 @@ if api_key:
                     # テクニカル計算
                     df['SMA20'] = df['Close'].rolling(20).mean()
                     df['SMA50'] = df['Close'].rolling(50).mean()
+                    
                     delta = df['Close'].diff()
                     rs = (delta.where(delta > 0, 0)).rolling(14).mean() / (-delta.where(delta < 0, 0)).rolling(14).mean()
                     df['RSI'] = 100 - (100 / (1 + rs))
 
-                    # 1. 本格チャート
+                    # 1. 詳細チャート
                     st.subheader(f"📊 {ticker} 詳細チャート")
                     fig = go.Figure()
                     fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='ローソク'))
-                    fig.add_trace(go.Scatter(x=df.index, y=df['SMA20'], line=dict(color='orange'), name='SMA20'))
-                    fig.add_trace(go.Scatter(x=df.index, y=df['SMA50'], line=dict(color='blue'), name='SMA50'))
-                    fig.update_layout(height=600, xaxis_rangeslider_visible=False)
-                    st.plotly_chart(fig, use_container_width=True)
-
-                    # 2. 実況レポート（読み上げ式）
-                    st.divider()
-                    st.subheader("🎙️ Geminiキャスターの相場解説")
-                    last = df.iloc[-1]
-                    
-                    # ★ここが変更点：長文の読み上げ用プロンプト★
-                    prompt = f"""
-                    あなたはベテランの相場解説者です。
-                    銘柄: {ticker}
-                    現在値: {last['Close']:.2f}
-                    RSI(14): {last['RSI']:.2f}
-                    
-                    この銘柄の現状を、ラジオ番組でリスナーに語りかけるような「丁寧な話し言葉」で解説してください。
-                    箇条書きは使わず、自然な文章で構成してください。
-                    
-                    以下の流れで話してください：
-                    1. まず、今のトレンドがどうなっているか（上がっているか下がっているか）。
-                    2. 次に、今が「買い時」なのか「売り時」なのか、ズバリ判定。
-                    3. 最後に、どこでエントリーしてどこで損切りすべきかのアドバイス。
-                    """
-                    res = model.generate_content(prompt)
-                    
-                    # 吹き出しのように表示
-                    st.markdown(f"""
-                    <div style="background-color:#f0f2f6; padding:20px; border-radius:10px; border-left: 5px solid #ff4b4b;">
-                        {res.text}
-                    </div>
-                    """, unsafe_allow_html=True)
-
-            except Exception as e:
-                st.error(f"エラーが発生しました: {e}")
-
-    else:
-        st.info("👈 左側のメニューから、実況したい銘柄やリストを選んでください。")
-
-else:
-    st.warning("👈 左上の欄にAPIキーを入力してください")
+                    fig.add_trace(go.Scatter(x=df.index, y=df['SMA20'], line=dict(color='orange'),
