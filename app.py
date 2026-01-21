@@ -3,116 +3,136 @@ import google.generativeai as genai
 import plotly.graph_objects as go
 import yfinance as yf
 import pandas as pd
+from datetime import datetime
 
 # --- 設定 ---
-# 最新の高速モデル（制限がゆるい）
 MODEL_NAME = "gemini-flash-latest"
 
-# AIへの命令（FX対応：売りも買いも判定させる）
-PROMPT = """
-あなたはプロの凄腕トレーダーです。
-提供されたチャート（ローソク足、移動平均線、RSI）を分析し、以下のフォーマットで投資判断を行ってください。
-FX（為替）や暗号資産も分析対象です。
+st.set_page_config(page_title="トレードAI分析 Master", layout="wide")
+st.title("💹 トレードAI分析 Master")
 
-## 分析結果
-1. **トレンド**: [上昇 / 下降 / レンジ] から選択
-2. **売買判断**:
-   - 【買い (LONG)】: 上昇の押し目、底値反転など
-   - 【売り (SHORT)】: 下降の戻り目、天井反転など
-   - 【様子見 (WAIT)】: 方向感がない場合
-3. **戦略・根拠**:
-   - エントリーの根拠（RSIの数値、移動平均線との位置関係など）
-   - 損切り(Stop Loss)の目安ライン
-   - 利確(Take Profit)の目安
-
-※ 投資助言ではなく、あくまでテクニカル分析の視点として回答してください。
-"""
-
-st.set_page_config(page_title="トレードAI分析 Pro", layout="wide")
-st.title("📈 トレードAI分析 Pro (FX対応)")
-
-# サイドバー設定
+# --- サイドバー設定 ---
 with st.sidebar:
-    st.header("設定")
-    # APIキー入力
+    st.header("⚙️ 設定")
     try:
         api_key = st.secrets["GEMINI_API_KEY"]
     except:
-        api_key = st.text_input("Gemini APIキーを入れてください", type="password")
-    
-    # 銘柄入力（FXの例を表示）
-    ticker = st.text_input("銘柄コード (例: USDJPY=X, 7203.T)", value="USDJPY=X")
-    st.caption("※ドル円: USDJPY=X, ユーロドル: EURUSD=X, ビットコイン: BTC-USD")
-    
-    days = st.slider("期間（日）", 30, 365, 180)
-    
-    # 分析ボタン
-    run_btn = st.button("AI分析を開始", type="primary")
+        api_key = st.text_input("Gemini APIキー", type="password")
 
-# メイン処理
-if run_btn and api_key:
-    genai.configure(api_key=api_key)
+    if api_key:
+        genai.configure(api_key=api_key)
+
+# --- 共通関数: データ取得 & テクニカル計算 ---
+def get_data_and_tech(ticker, days=180):
+    try:
+        df = yf.download(ticker, period=f"{days}d", interval="1d", progress=False)
+        if df.empty:
+            return None
+        
+        # テクニカル計算
+        df['SMA20'] = df['Close'].rolling(window=20).mean()
+        df['SMA50'] = df['Close'].rolling(window=50).mean()
+        
+        # RSI
+        delta = df['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        df['RSI'] = 100 - (100 / (1 + rs))
+        
+        return df
+    except:
+        return None
+
+# --- AIプロンプト ---
+PROMPT_SINGLE = """
+あなたはプロのトレーダーです。以下のデータから「トレンド」「売買判断（買い/売り/様子見）」「戦略」を簡潔に分析してください。
+FXの場合は売り目線も重要視してください。
+"""
+
+PROMPT_SCAN = """
+あなたはスカウトマンです。この銘柄が「今の瞬間に」買いか売りか、一言でズバリ判定してください。
+チャンスでなければ「対象外」と答えてください。
+"""
+
+# === タブで機能を切り替え ===
+tab1, tab2 = st.tabs(["📈 個別診断 (FX/株)", "💎 お宝発掘スキャン"])
+
+# ==========================================
+# タブ1: 個別診断 (さっきの機能)
+# ==========================================
+with tab1:
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        ticker = st.text_input("銘柄コード (例: 7203.T, USDJPY=X)", value="USDJPY=X", key="t1_ticker")
+    with col2:
+        days = st.slider("期間", 30, 365, 180, key="t1_days")
     
-    with st.spinner(f"{ticker} のデータを取得中..."):
-        try:
-            # データ取得
-            df = yf.download(ticker, period=f"{days}d", interval="1d")
-            
-            if df.empty:
-                st.error("データが見つかりませんでした。コードを確認してください。")
-            else:
-                # テクニカル計算
-                # 移動平均線 (SMA)
-                df['SMA20'] = df['Close'].rolling(window=20).mean()
-                df['SMA50'] = df['Close'].rolling(window=50).mean()
-                
-                # RSI
-                delta = df['Close'].diff()
-                gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-                loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-                rs = gain / loss
-                df['RSI'] = 100 - (100 / (1 + rs))
-
-                # チャート描画
-                fig = go.Figure()
-                
-                # ローソク足
-                fig.add_trace(go.Candlestick(
-                    x=df.index,
-                    open=df['Open'], high=df['High'],
-                    low=df['Low'], close=df['Close'],
-                    name='ローソク足'
-                ))
-                
-                # SMA
-                fig.add_trace(go.Scatter(x=df.index, y=df['SMA20'], line=dict(color='orange', width=1), name='SMA20'))
-                fig.add_trace(go.Scatter(x=df.index, y=df['SMA50'], line=dict(color='blue', width=1), name='SMA50'))
-                
-                fig.update_layout(title=f"{ticker} チャート", height=600)
-                st.plotly_chart(fig, use_container_width=True)
-
-                # AI分析開始
-                st.subheader("🤖 Geminiの分析レポート")
-                model = genai.GenerativeModel(MODEL_NAME)
-                
-                # AIに渡すデータを作成（最新の価格データとRSIなどを文字で伝える）
-                last_price = df['Close'].iloc[-1]
-                last_rsi = df['RSI'].iloc[-1]
-                data_summary = f"銘柄: {ticker}, 現在値: {last_price:.2f}, RSI(14): {last_rsi:.2f}"
-                
-                # チャート画像を送るのは難しいので、テキストデータで補足して質問
-                full_prompt = f"{PROMPT}\n\n【最新データ】\n{data_summary}"
-                
-                with st.chat_message("assistant"):
-                    response_placeholder = st.empty()
-                    response_placeholder.write("チャートを凝視しています...🧐")
+    if st.button("AI分析を開始", key="btn_single"):
+        if not api_key:
+            st.error("APIキーが設定されていません")
+        else:
+            with st.spinner("分析中..."):
+                df = get_data_and_tech(ticker, days)
+                if df is not None:
+                    # チャート表示
+                    fig = go.Figure()
+                    fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='ローソク'))
+                    fig.add_trace(go.Scatter(x=df.index, y=df['SMA20'], line=dict(color='orange'), name='SMA20'))
+                    fig.add_trace(go.Scatter(x=df.index, y=df['SMA50'], line=dict(color='blue'), name='SMA50'))
+                    fig.update_layout(height=500, title=f"{ticker} チャート")
+                    st.plotly_chart(fig, use_container_width=True)
                     
-                    try:
-                        # グラフの画像化は省略し、テキストデータで判断させる（高速化のため）
-                        response = model.generate_content(full_prompt)
-                        response_placeholder.markdown(response.text)
-                    except Exception as e:
-                        st.error(f"AIエラー: {e}")
+                    # AI分析
+                    st.subheader("🤖 Gemini先生の診断")
+                    model = genai.GenerativeModel(MODEL_NAME)
+                    last_data = df.iloc[-1]
+                    info = f"銘柄:{ticker} 終値:{last_data['Close']:.2f} RSI:{last_data['RSI']:.2f}"
+                    res = model.generate_content(f"{PROMPT_SINGLE}\n{info}")
+                    st.markdown(res.text)
+                else:
+                    st.error("データが見つかりません。コードを確認してください（日本株は .T が必要）")
 
-        except Exception as e:
-            st.error(f"エラーが発生しました: {e}")
+# ==========================================
+# タブ2: お宝発掘スキャン (復活させた機能)
+# ==========================================
+with tab2:
+    st.markdown("##### 複数の銘柄を一気にチェックします！")
+    
+    # スキャン対象リスト（自由に変えてください）
+    default_tickers = "7203.T, 9984.T, 8306.T, 6758.T, 6920.T, USDJPY=X, EURUSD=X"
+    target_tickers = st.text_area("リスト (カンマ区切り)", value=default_tickers)
+    
+    # 条件設定
+    rsi_threshold = st.slider("RSIがこれ以下なら「売られすぎ」と判定", 20, 50, 30)
+    
+    if st.button("お宝スキャン開始", key="btn_scan"):
+        if not api_key:
+            st.error("APIキーが必要です")
+        else:
+            ticker_list = [t.strip() for t in target_tickers.split(',')]
+            st.write(f"{len(ticker_list)} 銘柄をスキャン中... (時間がかかります)")
+            
+            model = genai.GenerativeModel(MODEL_NAME)
+            
+            for t in ticker_list:
+                with st.container():
+                    df = get_data_and_tech(t, 100)
+                    if df is not None:
+                        last_rsi = df['RSI'].iloc[-1]
+                        last_price = df['Close'].iloc[-1]
+                        
+                        # 条件: RSIが低い、または AIに見せたい場合
+                        if last_rsi <= rsi_threshold:
+                            st.markdown(f"**🔥 発見: {t}** (RSI: {last_rsi:.1f})")
+                            
+                            # 小さなチャート表示
+                            st.line_chart(df['Close'])
+                            
+                            # AIの一言コメント
+                            info = f"銘柄:{t} 終値:{last_price} RSI:{last_rsi}"
+                            res = model.generate_content(f"{PROMPT_SCAN}\n{info}")
+                            st.info(res.text)
+                            st.divider()
+            
+            st.success("スキャン完了！")
