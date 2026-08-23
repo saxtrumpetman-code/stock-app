@@ -3,12 +3,38 @@ import google.generativeai as genai
 import plotly.graph_objects as go
 import yfinance as yf
 import time
+import json
+import os
 
 # --- 設定: エラーが出たこの名前が、実は正解でした ---
 MODEL_NAME = "gemini-flash-latest"
+MACRO_FILE = "macros.json"
 
 st.set_page_config(page_title="トレードAI分析 Pro", layout="wide")
 st.title("📈 トレードAI分析 Pro (不屈の再試行版)")
+
+# --- マクロ(保存された銘柄・期間の組み合わせ)の読み書き ---
+def load_macros():
+    if os.path.exists(MACRO_FILE):
+        try:
+            with open(MACRO_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+def save_macros(macros):
+    with open(MACRO_FILE, "w", encoding="utf-8") as f:
+        json.dump(macros, f, ensure_ascii=False, indent=2)
+
+if "macros" not in st.session_state:
+    st.session_state.macros = load_macros()
+if "ticker" not in st.session_state:
+    st.session_state.ticker = "USDJPY=X"
+if "days" not in st.session_state:
+    st.session_state.days = 180
+if "trigger_single" not in st.session_state:
+    st.session_state.trigger_single = False
 
 # --- サイドバー ---
 with st.sidebar:
@@ -21,13 +47,52 @@ with st.sidebar:
     st.divider()
 
     st.header("2. 個別分析")
-    ticker = st.text_input("銘柄コード (例: USDJPY=X, 7203.T)", value="USDJPY=X")
-    days = st.slider("期間 (日)", 30, 365, 180)
+    ticker = st.text_input("銘柄コード (例: USDJPY=X, 7203.T)", key="ticker")
+    days = st.slider("期間 (日)", 30, 365, key="days")
     btn_single = st.button("🚀 チャート分析を実行", type="primary")
 
     st.divider()
 
-    st.header("3. 自動スクリーニング")
+    st.header("📱 3. マイマクロ (スマホ用ワンタップ)")
+    st.caption("よく使う銘柄・期間の組み合わせをボタンとして保存できます")
+
+    with st.expander("➕ 現在の設定をマクロとして保存"):
+        macro_name = st.text_input("マクロ名 (例: ドル円チェック)", key="macro_name_input")
+        if st.button("💾 保存する"):
+            if macro_name:
+                st.session_state.macros[macro_name] = {
+                    "ticker": st.session_state.ticker,
+                    "days": st.session_state.days,
+                }
+                save_macros(st.session_state.macros)
+                st.success(f"「{macro_name}」を保存しました")
+            else:
+                st.warning("マクロ名を入力してください")
+
+    macro_to_run = None
+    if st.session_state.macros:
+        for name, cfg in list(st.session_state.macros.items()):
+            col_run, col_del = st.columns([4, 1])
+            with col_run:
+                if st.button(f"▶ {name}", key=f"macro_run_{name}", use_container_width=True):
+                    macro_to_run = cfg
+            with col_del:
+                if st.button("🗑", key=f"macro_del_{name}"):
+                    del st.session_state.macros[name]
+                    save_macros(st.session_state.macros)
+                    st.rerun()
+    else:
+        st.caption("保存されたマクロはまだありません")
+
+    if macro_to_run:
+        st.session_state.ticker = macro_to_run["ticker"]
+        st.session_state.days = macro_to_run["days"]
+        st.session_state.trigger_single = True
+        st.rerun()
+
+    st.divider()
+
+    st.header("4. 自動スクリーニング")
     st.caption("※制限がかかっても自動で待機して再開します")
     
     btn_low = st.button("💰 日本株：定位株 (低位)")
@@ -125,7 +190,8 @@ if api_key:
     # ========================================================
     # パターンB：個別分析 (FX売り対応)
     # ========================================================
-    elif btn_single:
+    elif btn_single or st.session_state.trigger_single:
+        st.session_state.trigger_single = False
         with st.spinner(f"🔍 {ticker} を分析中..."):
             try:
                 stock = yf.Ticker(ticker)
