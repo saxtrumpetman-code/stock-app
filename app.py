@@ -53,6 +53,71 @@ def ask_gemini_with_retry(model, prompt):
     st.error("❌ 混雑が激しいため中断しました。時間を空けて試してください。")
     return None
 
+# --- 裁量パネル: AIのトレード判断を統一フォーマットで表示 ---
+JUDGMENT_STYLES = {
+    "買い": {"color": "#0f9d58", "bg": "#e6f4ea", "icon": "📈"},
+    "売り": {"color": "#d93025", "bg": "#fce8e6", "icon": "📉"},
+    "様子見": {"color": "#5f6368", "bg": "#f1f3f4", "icon": "⏸️"},
+}
+
+def build_judgment_prompt(ticker, price, rsi, currency, detail=True):
+    prompt = f"""
+銘柄: {ticker} (価格: {price:.2f}{currency}, RSI: {rsi:.1f})
+あなたはプロのトレーダーです。以下の【出力フォーマット】に厳密に従い、日本語で回答してください。
+項目名と内容は「項目名: 内容」の形式で1行ずつ、改行して出力してください。
+
+【出力フォーマット】
+判定: (買い/売り/様子見のいずれか一言)
+トレンド: (上昇/下降/レンジのいずれか)
+理由: (1〜2文で簡潔に)
+"""
+    if detail:
+        prompt += """エントリー: (目安の価格帯)
+損切り: (目安の価格)
+利確: (目安の価格)
+"""
+    return prompt
+
+def parse_judgment_fields(text):
+    fields = {}
+    for line in text.splitlines():
+        sep = ":" if ":" in line else ("：" if "：" in line else None)
+        if not sep:
+            continue
+        key, _, value = line.partition(sep)
+        key = key.strip().lstrip("#*- ").strip()
+        value = value.strip()
+        if key and value:
+            fields[key] = value
+    return fields
+
+def render_judgment_panel(text, compact=False):
+    fields = parse_judgment_fields(text)
+    judgment = fields.get("判定", "").strip()
+    style = JUDGMENT_STYLES.get(judgment, JUDGMENT_STYLES["様子見"])
+
+    st.markdown(
+        f"""<div style="border-left:6px solid {style['color']}; background:{style['bg']};
+        padding:10px 14px; border-radius:6px; margin-bottom:8px;">
+        <span style="font-size:1.1em; font-weight:700; color:{style['color']};">
+        {style['icon']} 判定: {judgment or '不明'}</span></div>""",
+        unsafe_allow_html=True,
+    )
+
+    if not fields:
+        st.markdown(text)
+        return
+
+    if fields.get("トレンド"):
+        st.markdown(f"**トレンド**: {fields['トレンド']}")
+    if fields.get("理由"):
+        st.markdown(f"**理由**: {fields['理由']}")
+
+    if not compact:
+        for label in ["エントリー", "損切り", "利確"]:
+            if fields.get(label):
+                st.markdown(f"**{label}**: {fields[label]}")
+
 # --- メイン処理 ---
 if api_key:
     genai.configure(api_key=api_key)
@@ -102,17 +167,13 @@ if api_key:
 
                         with col_ai:
                             st.metric("株価", f"{last_price:.2f} {currency}", f"RSI: {rsi:.1f}")
-                            
-                            prompt = f"""
-                            銘柄: {t} (価格:{last_price:.2f}, RSI:{rsi:.1f})
-                            質問: テクニカル的に「買い」か「売り」か？
-                            回答: 結論を一言（買い/売り/様子見）で述べ、理由を1行で。
-                            """
-                            
+
+                            prompt = build_judgment_prompt(t, last_price, rsi, currency, detail=False)
+
                             # ★ここが変わりました：粘り強い呼び出し★
                             res = ask_gemini_with_retry(model, prompt)
                             if res:
-                                st.info(res.text)
+                                render_judgment_panel(res.text, compact=True)
 
                 except Exception as e:
                     st.error(f"データエラー: {e}")
@@ -153,26 +214,14 @@ if api_key:
                     st.divider()
                     st.subheader("🤖 Gemini先生の投資判断")
                     last = df.iloc[-1]
-                    
-                    prompt = f"""
-                    あなたはプロのトレーダーです。
-                    銘柄: {ticker}
-                    現在値: {last['Close']:.2f}
-                    RSI(14): {last['RSI']:.2f}
-                    
-                    以下の項目について、日本語で的確に分析してください：
-                    1. **トレンド判定**: (上昇・下降・レンジ)
-                    2. **売買シグナル**:
-                       - 「買い (Long)」
-                       - 「売り (Short)」 ※FXや下落局面では空売りも考慮
-                       - 「様子見 (Wait)」
-                    3. **戦略シナリオ**: エントリー価格、損切り、利確の目安。
-                    """
-                    
+                    currency = "$" if "T" not in ticker and "=X" not in ticker else "円"
+
+                    prompt = build_judgment_prompt(ticker, last['Close'], last['RSI'], currency, detail=True)
+
                     # ★粘り強い呼び出し★
                     res = ask_gemini_with_retry(model, prompt)
                     if res:
-                        st.markdown(res.text)
+                        render_judgment_panel(res.text, compact=False)
 
             except Exception as e:
                 st.error(f"システムエラー: {e}")
