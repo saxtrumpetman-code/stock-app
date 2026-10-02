@@ -13,22 +13,24 @@
 //|   首7: ボリンジャーバンド 終値 vs ミドル                             |
 //|   首8: 一目均衡表 終値 vs 雲                                        |
 //|                                                                  |
-//|  使い方: EURJPY のチャート(推奨 H1)にセット。                        |
+//|  売りは1時間足・買いは4時間足で判定 (自分で回す版の設定)。         |
+//|  使い方: EURJPY のチャート(どの時間足でも可)にセット。             |
 //|  ※スマホ版MT4ではEAは動きません。PC版MT4かVPSで稼働させてください。  |
 //+------------------------------------------------------------------+
 #property copyright "stock-app"
-#property version   "1.00"
+#property version   "1.10"
 #property strict
 #property description "八岐大蛇 EURJPY専用: 8本の首(指標)の多数決でエントリー"
 
 //==== 基本設定 ====
 input int             MagicNumber      = 880801;     // マジックナンバー
-input ENUM_TIMEFRAMES SignalTF         = PERIOD_H1;  // シグナル判定の時間足
+input ENUM_TIMEFRAMES SellTF           = PERIOD_H1;  // 売りシグナルの時間足
+input ENUM_TIMEFRAMES BuyTF            = PERIOD_H4;  // 買いシグナルの時間足
 input int             VotesRequired    = 6;          // 8本中いくつ揃えばエントリー
 input bool            RequireTrendHead = true;       // 首2(EMA200)の同意を必須にする
 input bool            AllowBuy         = true;       // 買いを許可
 input bool            AllowSell        = true;       // 売りを許可
-input bool            CloseOnOpposite  = true;       // 逆シグナルで決済
+input bool            CloseOnOpposite  = false;      // 逆シグナルで決済
 input int             Slippage         = 3;          // 許容スリッページ(ポイント)
 input bool            ECNMode          = false;      // 発注後にSL/TPを設定する(ECN口座用)
 
@@ -39,23 +41,23 @@ input double          RiskPercent      = 1.0;        // 1トレードのリス�
 
 //==== 決済 ====
 input int             ATR_Period       = 14;         // ATR期間
-input double          SL_ATR_Mult      = 1.5;        // 損切り = ATR × この倍率
+input double          SL_ATR_Mult      = 2.0;        // 損切り = ATR × この倍率
 input double          TP_ATR_Mult      = 2.5;        // 利確 = ATR × この倍率
-input double          MinSL_Pips       = 15.0;       // 損切り幅の下限(pips)
-input double          MaxSL_Pips       = 60.0;       // 損切り幅の上限(pips)
-input bool            UseBreakEven     = true;       // 建値ストップ
+input double          MinSL_Pips       = 0.0;        // 損切り幅の下限(pips, 0=無効)
+input double          MaxSL_Pips       = 0.0;        // 損切り幅の上限(pips, 0=無効)
+input bool            UseBreakEven     = false;      // 建値ストップ
 input double          BE_Trigger_Pips  = 20.0;       // 建値移動の発動(pips)
 input double          BE_Offset_Pips   = 2.0;        // 建値+何pipsに置くか
-input bool            UseTrailing      = true;       // トレーリングストップ
+input bool            UseTrailing      = false;      // トレーリングストップ
 input double          Trail_Start_Pips = 30.0;       // トレール開始(pips)
 input double          Trail_Dist_Pips  = 20.0;       // 現在値からの距離(pips)
 
 //==== フィルター ====
-input double          MaxSpreadPips    = 2.5;        // 最大スプレッド(pips)
+input double          MaxSpreadPips    = 3.0;        // 最大スプレッド(pips)
 input int             ServerGMTOffset  = 2;          // サーバー時間のGMT差(夏時間は3が多い)
-input int             StartHourJST     = 15;         // 取引開始(日本時間)
-input int             EndHourJST       = 2;          // 取引終了(日本時間, 日またぎ可)
-input int             FridayStopHour   = 20;         // 金曜この時刻(サーバー)以降は新規なし
+input int             StartHourJST     = 0;          // 取引開始(日本時間, 開始=終了で24時間)
+input int             EndHourJST       = 0;          // 取引終了(日本時間, 日またぎ可)
+input int             FridayStopHour   = 24;         // 金曜この時刻(サーバー)以降は新規なし(24=無効)
 
 //==== 首のパラメータ ====
 input int             FastEMA          = 20;
@@ -80,8 +82,12 @@ input int             Tenkan           = 9;
 input int             Kijun            = 26;
 input int             SenkouB          = 52;
 
-datetime g_lastBar = 0;
-int      g_heads[8];
+datetime g_lastBarBuy  = 0;
+datetime g_lastBarSell = 0;
+int      g_headsBuy[8];
+int      g_headsSell[8];
+int      g_buyVotes  = 0;   // 買い時間足での買い票
+int      g_sellVotes = 0;   // 売り時間足での売り票
 
 //+------------------------------------------------------------------+
 int OnInit()
@@ -111,16 +117,26 @@ void OnTick()
 {
    ManagePositions();
 
-   datetime bar = iTime(Symbol(), SignalTF, 0);
-   if(bar == 0 || bar == g_lastBar) return;
-   g_lastBar = bar;
+   bool newBuyBar  = IsNewBar(BuyTF,  g_lastBarBuy);
+   bool newSellBar = IsNewBar(SellTF, g_lastBarSell);
+   if(!newBuyBar && !newSellBar) return;
 
-   int buyVotes = 0, sellVotes = 0;
-   CountVotes(buyVotes, sellVotes);
-   ShowStatus(buyVotes, sellVotes);
+   bool buySignal = false, sellSignal = false;
+   int  b = 0, sv = 0;
 
-   bool buySignal  = AllowBuy  && buyVotes  >= VotesRequired && (!RequireTrendHead || g_heads[1] > 0);
-   bool sellSignal = AllowSell && sellVotes >= VotesRequired && (!RequireTrendHead || g_heads[1] < 0);
+   if(newBuyBar)
+   {
+      CountVotes(BuyTF, g_headsBuy, b, sv);
+      g_buyVotes = b;
+      buySignal  = AllowBuy && b >= VotesRequired && (!RequireTrendHead || g_headsBuy[1] > 0);
+   }
+   if(newSellBar)
+   {
+      CountVotes(SellTF, g_headsSell, b, sv);
+      g_sellVotes = sv;
+      sellSignal  = AllowSell && sv >= VotesRequired && (!RequireTrendHead || g_headsSell[1] < 0);
+   }
+   ShowStatus();
 
    if(CloseOnOpposite)
    {
@@ -131,70 +147,77 @@ void OnTick()
    if(CountPositions() > 0) return;
    if(!CanEnter()) return;
 
-   if(buySignal)       OpenOrder(OP_BUY);
-   else if(sellSignal) OpenOrder(OP_SELL);
+   if(buySignal)       OpenOrder(OP_BUY,  BuyTF);
+   else if(sellSignal) OpenOrder(OP_SELL, SellTF);
 }
 
 //+------------------------------------------------------------------+
 //| 8本の首の投票  (+1=買い, -1=売り, 0=中立)  確定足(shift=1)で判定   |
 //+------------------------------------------------------------------+
-void CountVotes(int &buyVotes, int &sellVotes)
+bool IsNewBar(int tf, datetime &lastBar)
+{
+   datetime bar = iTime(Symbol(), tf, 0);
+   if(bar == 0 || bar == lastBar) return(false);
+   lastBar = bar;
+   return(true);
+}
+
+void CountVotes(int tf, int &heads[], int &buyVotes, int &sellVotes)
 {
    string s  = Symbol();
-   int    tf = SignalTF;
    int    i  = 1;
    double close = iClose(s, tf, i);
 
    // 首1: EMA20 vs EMA50
    double emaF = iMA(s, tf, FastEMA, 0, MODE_EMA, PRICE_CLOSE, i);
    double emaS = iMA(s, tf, SlowEMA, 0, MODE_EMA, PRICE_CLOSE, i);
-   g_heads[0] = Sign(emaF - emaS);
+   heads[0] = Sign(emaF - emaS);
 
    // 首2: 終値 vs EMA200
    double emaT = iMA(s, tf, TrendEMA, 0, MODE_EMA, PRICE_CLOSE, i);
-   g_heads[1] = Sign(close - emaT);
+   heads[1] = Sign(close - emaT);
 
    // 首3: MACD
    double macdM = iMACD(s, tf, MACD_Fast, MACD_Slow, MACD_Signal, PRICE_CLOSE, MODE_MAIN, i);
    double macdS = iMACD(s, tf, MACD_Fast, MACD_Slow, MACD_Signal, PRICE_CLOSE, MODE_SIGNAL, i);
-   g_heads[2] = Sign(macdM - macdS);
+   heads[2] = Sign(macdM - macdS);
 
    // 首4: RSI
    double rsi = iRSI(s, tf, RSI_Period, PRICE_CLOSE, i);
-   g_heads[3] = 0;
-   if(rsi > 50.0 && rsi < RSI_Upper) g_heads[3] = 1;
-   if(rsi < 50.0 && rsi > RSI_Lower) g_heads[3] = -1;
+   heads[3] = 0;
+   if(rsi > 50.0 && rsi < RSI_Upper) heads[3] = 1;
+   if(rsi < 50.0 && rsi > RSI_Lower) heads[3] = -1;
 
    // 首5: ストキャスティクス
    double stK = iStochastic(s, tf, Stoch_K, Stoch_D, Stoch_Slow, MODE_SMA, 0, MODE_MAIN, i);
    double stD = iStochastic(s, tf, Stoch_K, Stoch_D, Stoch_Slow, MODE_SMA, 0, MODE_SIGNAL, i);
-   g_heads[4] = 0;
-   if(stK > stD && stK < Stoch_Upper) g_heads[4] = 1;
-   if(stK < stD && stK > Stoch_Lower) g_heads[4] = -1;
+   heads[4] = 0;
+   if(stK > stD && stK < Stoch_Upper) heads[4] = 1;
+   if(stK < stD && stK > Stoch_Lower) heads[4] = -1;
 
    // 首6: ADX / DMI
    double adx = iADX(s, tf, ADX_Period, PRICE_CLOSE, MODE_MAIN, i);
    double pdi = iADX(s, tf, ADX_Period, PRICE_CLOSE, MODE_PLUSDI, i);
    double mdi = iADX(s, tf, ADX_Period, PRICE_CLOSE, MODE_MINUSDI, i);
-   g_heads[5] = (adx >= ADX_Min) ? Sign(pdi - mdi) : 0;
+   heads[5] = (adx >= ADX_Min) ? Sign(pdi - mdi) : 0;
 
    // 首7: ボリンジャーバンド ミドル
    double bbMid = iBands(s, tf, BB_Period, BB_Dev, 0, PRICE_CLOSE, MODE_MAIN, i);
-   g_heads[6] = Sign(close - bbMid);
+   heads[6] = Sign(close - bbMid);
 
    // 首8: 一目均衡表 雲
    double spanA = iIchimoku(s, tf, Tenkan, Kijun, SenkouB, MODE_SENKOUSPANA, i);
    double spanB = iIchimoku(s, tf, Tenkan, Kijun, SenkouB, MODE_SENKOUSPANB, i);
-   g_heads[7] = 0;
-   if(close > MathMax(spanA, spanB)) g_heads[7] = 1;
-   if(close < MathMin(spanA, spanB)) g_heads[7] = -1;
+   heads[7] = 0;
+   if(close > MathMax(spanA, spanB)) heads[7] = 1;
+   if(close < MathMin(spanA, spanB)) heads[7] = -1;
 
    buyVotes = 0;
    sellVotes = 0;
    for(int h = 0; h < 8; h++)
    {
-      if(g_heads[h] > 0) buyVotes++;
-      if(g_heads[h] < 0) sellVotes++;
+      if(heads[h] > 0) buyVotes++;
+      if(heads[h] < 0) sellVotes++;
    }
 }
 
@@ -262,13 +285,13 @@ double CalcLots(double slDist)
 }
 
 //+------------------------------------------------------------------+
-void OpenOrder(int type)
+void OpenOrder(int type, int tf)
 {
-   double atr    = iATR(Symbol(), SignalTF, ATR_Period, 1);
+   double atr    = iATR(Symbol(), tf, ATR_Period, 1);
    double slDist = atr * SL_ATR_Mult;
-   slDist = MathMax(slDist, MinSL_Pips * Pip());
-   slDist = MathMin(slDist, MaxSL_Pips * Pip());
-   double tpDist = slDist * (TP_ATR_Mult / SL_ATR_Mult);
+   double tpDist = atr * TP_ATR_Mult;
+   if(MinSL_Pips > 0) slDist = MathMax(slDist, MinSL_Pips * Pip());
+   if(MaxSL_Pips > 0) slDist = MathMin(slDist, MaxSL_Pips * Pip());
 
    double minStop = MarketInfo(Symbol(), MODE_STOPLEVEL) * Point;
    slDist = MathMax(slDist, minStop);
@@ -366,17 +389,26 @@ void ManagePositions()
 }
 
 //+------------------------------------------------------------------+
-void ShowStatus(int buyVotes, int sellVotes)
+void ShowStatus()
 {
    string names[8] = {"EMA20/50", "EMA200", "MACD", "RSI", "Stoch", "ADX", "BB", "Ichimoku"};
-   string txt = "八岐大蛇 EURJPY  買い " + IntegerToString(buyVotes) +
-                " / 売り " + IntegerToString(sellVotes) +
+   string txt = "八岐大蛇 EURJPY  買い(" + TFName(BuyTF) + ") " + IntegerToString(g_buyVotes) +
+                " / 売り(" + TFName(SellTF) + ") " + IntegerToString(g_sellVotes) +
                 "  (必要 " + IntegerToString(VotesRequired) + ")\n";
    for(int h = 0; h < 8; h++)
    {
-      string v = (g_heads[h] > 0) ? "▲買" : (g_heads[h] < 0 ? "▼売" : "－");
-      txt += "首" + IntegerToString(h + 1) + " " + names[h] + ": " + v + "\n";
+      string vb = (g_headsBuy[h]  > 0) ? "▲買" : (g_headsBuy[h]  < 0 ? "▼売" : "－");
+      string vs = (g_headsSell[h] > 0) ? "▲買" : (g_headsSell[h] < 0 ? "▼売" : "－");
+      txt += "首" + IntegerToString(h + 1) + " " + names[h] + ": " + TFName(BuyTF) + " " + vb + " / " + TFName(SellTF) + " " + vs + "\n";
    }
    Comment(txt);
+}
+
+string TFName(int tf)
+{
+   if(tf == 0) tf = Period();
+   if(tf >= PERIOD_D1) return("D" + IntegerToString(tf / PERIOD_D1));
+   if(tf >= PERIOD_H1) return("H" + IntegerToString(tf / PERIOD_H1));
+   return("M" + IntegerToString(tf));
 }
 //+------------------------------------------------------------------+
